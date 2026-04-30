@@ -1,4 +1,4 @@
-package myplugin
+package traefik_plugin_keycloak_oauth2_introspection
 
 import (
 	"bytes"
