@@ -1,0 +1,9 @@
+displayName: Keycloak Oauth2 introspection
+
+type: middleware
+
+import: github.com/augusto-sb/traefik-plugin-keycloak-oauth2-introspection
+
+testData: {}
+
+summary: 'traefik plugin to validate jwt tokens against keycloak and verify if active'
