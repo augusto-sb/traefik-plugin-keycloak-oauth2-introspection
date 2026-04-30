@@ -6,7 +6,7 @@ experimental:
 
 providers:
   file:
-    filename: "/dynamic.yml" 
+    filename: "/dynamic.yml"
     watch: false
 
 entryPoints:
