@@ -1,0 +1,21 @@
+http:
+  routers:
+    my-router:
+      rule: "Host(`example.com`)"
+      service: my-service
+      entryPoints:
+        - "web"
+      middlewares:
+        - "my-middleware"
+  services:
+    my-service:
+      loadBalancer:
+        servers:
+          - url: "http://localhost:8080"
+  middlewares:
+    my-middleware:
+      plugin:
+        localkc:
+          KeycloakIntrospectionEndpoint: "https://example.com/auth/realms/realm/protocol/openid-connect/token/introspect"
+          ClientID: "private-client"
+          ClientSecret: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

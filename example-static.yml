@@ -1,0 +1,17 @@
+experimental:
+  plugins:
+    localkc:
+      moduleName: "github.com/augusto-sb/traefik-plugin-keycloak-oauth2-introspection"
+      version: "v0.0.1"
+
+providers:
+  file:
+    filename: "/dynamic.yml" 
+    watch: false
+
+entryPoints:
+  web:
+    address: ":8080"
+
+log:
+  level: DEBUG
