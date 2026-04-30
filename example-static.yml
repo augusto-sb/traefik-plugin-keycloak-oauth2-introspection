@@ -2,7 +2,7 @@ experimental:
   plugins:
     localkc:
       moduleName: "github.com/augusto-sb/traefik-plugin-keycloak-oauth2-introspection"
-      version: "v0.0.1"
+      version: "v0.0.4"
 
 providers:
   file:
