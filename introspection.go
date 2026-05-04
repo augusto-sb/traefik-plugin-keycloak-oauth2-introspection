@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -19,9 +18,14 @@ type Config struct {
 	ClientSecret                  *string
 }
 
+type ResponseRoles struct {
+	Roles []string `json:"roles"`
+}
+
 type Response struct {
-	Active *bool `json:"active"`
-	// add permissions if you want to also validate roles
+	Active         *bool                    `json:"active"`
+	RealmAccess    ResponseRoles            `json:"realm_access"`
+	ResourceAccess map[string]ResponseRoles `json:"resource_access"`
 }
 
 func CreateConfig() *Config {
@@ -103,12 +107,10 @@ func (a *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	var s Response
 	err = json.Unmarshal(bodyBytes, &s)
 	if err != nil {
-		fmt.Println("\n\n", err, string(bodyBytes), "\n\n")
 		http.Error(rw, "unmarshall", http.StatusInternalServerError)
 		return
 	}
 	if s.Active == nil || *(s.Active) == false {
-		fmt.Println("\n\n", string(bodyBytes), "\n\n")
 		http.Error(rw, "not active: ", http.StatusUnauthorized)
 		return
 	}
