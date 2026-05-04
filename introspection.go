@@ -141,11 +141,11 @@ func (a *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		if tokenCRok {
 			for _, crv := range cfgCRval {
 				if !slices.Contains(tokenCRval.Roles, crv) {
-					errs = append(errs, "cfgCRkey:"+crv)
+					errs = append(errs, cfgCRkey+":"+crv)
 				}
 			}
 		} else {
-			errs = append(errs, "cfgCRkey:("+strings.Join(cfgCRval, "|")+")")
+			errs = append(errs, cfgCRkey+":("+strings.Join(cfgCRval, "|")+")")
 		}
 	}
 	if len(errs) != 0 {
