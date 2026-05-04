@@ -36,3 +36,7 @@ curl http://localhost:8080 -H 'Host: example.com' -H 'Authorization: Bearer ...'
 # info
 
 https://doc.traefik.io/traefik/v3.6/reference/install-configuration/configuration-options/
+
+# prod volume to avoid redownload
+
+/plugins-storage
