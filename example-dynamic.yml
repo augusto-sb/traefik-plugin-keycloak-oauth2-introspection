@@ -19,3 +19,13 @@ http:
           KeycloakIntrospectionEndpoint: "https://example.com/auth/realms/realm/protocol/openid-connect/token/introspect"
           ClientID: "private-client"
           ClientSecret: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          RealmRoles:
+            - "uma_authorization"
+            - "noexiste"
+          ClientRoles:
+            account:
+              - "view-profile"
+              - "noexiste"
+            noexiste:
+              - "noexiste1"
+              - "noexiste2"
