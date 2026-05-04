@@ -1,13 +1,13 @@
 package traefik_plugin_keycloak_oauth2_introspection
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -16,6 +16,8 @@ type Config struct {
 	KeycloakIntrospectionEndpoint *string
 	ClientID                      *string
 	ClientSecret                  *string
+	RealmRoles                    *([]string)
+	ClientRoles                   *(map[string]([]string))
 }
 
 type ResponseRoles struct {
@@ -33,6 +35,8 @@ func CreateConfig() *Config {
 		KeycloakIntrospectionEndpoint: nil,
 		ClientID:                      nil,
 		ClientSecret:                  nil,
+		RealmRoles:                    nil,
+		ClientRoles:                   nil,
 	}
 }
 
@@ -41,6 +45,8 @@ type Plugin struct {
 	endpoint     string
 	clientId     string
 	clientSecret string
+	realmRoles   []string
+	clientRoles  map[string]([]string)
 	httpClient   *http.Client
 }
 
@@ -54,20 +60,30 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			errs = append(errs, "KeycloakIntrospectionEndpoint no es uri valida?")
 		}
 	}
-	if (*config).KeycloakIntrospectionEndpoint == nil {
+	if (*config).ClientID == nil {
 		errs = append(errs, "ClientID not set")
 	}
-	if (*config).KeycloakIntrospectionEndpoint == nil {
+	if (*config).ClientSecret == nil {
 		errs = append(errs, "ClientSecret not set")
 	}
 	if len(errs) != 0 {
 		return nil, errors.New(strings.Join(errs, ", "))
+	}
+	realmRoles := []string{}
+	if (*config).RealmRoles != nil {
+		realmRoles = *((*config).RealmRoles)
+	}
+	clientRoles := map[string]([]string){}
+	if (*config).ClientRoles != nil {
+		clientRoles = *((*config).ClientRoles)
 	}
 	return &Plugin{
 		next:         next,
 		endpoint:     *((*config).KeycloakIntrospectionEndpoint),
 		clientId:     *((*config).ClientID),
 		clientSecret: *((*config).ClientSecret),
+		realmRoles:   realmRoles,
+		clientRoles:  clientRoles,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -111,7 +127,29 @@ func (a *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if s.Active == nil || *(s.Active) == false {
-		http.Error(rw, "not active: ", http.StatusUnauthorized)
+		http.Error(rw, "not active token", http.StatusUnauthorized)
+		return
+	}
+	var errs []string = []string{}
+	for _, r := range a.realmRoles {
+		if !slices.Contains(s.RealmAccess.Roles, r) {
+			errs = append(errs, r)
+		}
+	}
+	for cfgCRkey, cfgCRval := range a.clientRoles {
+		tokenCRval, tokenCRok := s.ResourceAccess[cfgCRkey]
+		if tokenCRok {
+			for _, crv := range cfgCRval {
+				if !slices.Contains(tokenCRval.Roles, crv) {
+					errs = append(errs, "cfgCRkey:"+crv)
+				}
+			}
+		} else {
+			errs = append(errs, "cfgCRkey:("+strings.Join(cfgCRval, "|")+")")
+		}
+	}
+	if len(errs) != 0 {
+		http.Error(rw, "missing roles: "+strings.Join(errs, ", "), http.StatusForbidden)
 		return
 	}
 	a.next.ServeHTTP(rw, req)
