@@ -40,3 +40,9 @@ https://doc.traefik.io/traefik/v3.6/reference/install-configuration/configuratio
 # prod volume to avoid redownload
 
 /plugins-storage
+
+
+
+# local test SSO
+
+`docker container run --rm -p 8080:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin quay.io/keycloak/keycloak:26.6.1-0 start-dev`
