@@ -18,6 +18,7 @@ type Config struct {
 	ClientSecret                  *string
 	RealmRoles                    *([]string)
 	ClientRoles                   *(map[string]([]string))
+	Method                        string
 }
 
 type ResponseRoles struct {
@@ -37,10 +38,11 @@ func CreateConfig() *Config {
 		ClientSecret:                  nil,
 		RealmRoles:                    nil,
 		ClientRoles:                   nil,
+		Method:                        "",
 	}
 }
 
-type Plugin struct {
+type PluginIntrospection struct {
 	next         http.Handler
 	endpoint     string
 	clientId     string
@@ -50,25 +52,17 @@ type Plugin struct {
 	httpClient   *http.Client
 }
 
+type PluginSignature struct {
+	next        http.Handler
+	cert        string
+	realmRoles  []string
+	clientRoles map[string]([]string)
+}
+
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	var errs []string = []string{}
-	if (*config).KeycloakIntrospectionEndpoint == nil {
-		errs = append(errs, "KeycloakIntrospectionEndpoint not set")
-	} else {
-		_, err := url.ParseRequestURI(*((*config).KeycloakIntrospectionEndpoint))
-		if err != nil {
-			errs = append(errs, "KeycloakIntrospectionEndpoint no es uri valida?")
-		}
-	}
-	if (*config).ClientID == nil {
-		errs = append(errs, "ClientID not set")
-	}
-	if (*config).ClientSecret == nil {
-		errs = append(errs, "ClientSecret not set")
-	}
-	if len(errs) != 0 {
-		return nil, errors.New(strings.Join(errs, ", "))
-	}
+	var handler http.Handler
+
 	realmRoles := []string{}
 	if (*config).RealmRoles != nil {
 		realmRoles = *((*config).RealmRoles)
@@ -77,20 +71,52 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	if (*config).ClientRoles != nil {
 		clientRoles = *((*config).ClientRoles)
 	}
-	return &Plugin{
-		next:         next,
-		endpoint:     *((*config).KeycloakIntrospectionEndpoint),
-		clientId:     *((*config).ClientID),
-		clientSecret: *((*config).ClientSecret),
-		realmRoles:   realmRoles,
-		clientRoles:  clientRoles,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-	}, nil
+
+	switch (*config).Method {
+	case "introspection":
+		if (*config).KeycloakIntrospectionEndpoint == nil {
+			errs = append(errs, "KeycloakIntrospectionEndpoint not set")
+		} else {
+			_, err := url.ParseRequestURI(*((*config).KeycloakIntrospectionEndpoint))
+			if err != nil {
+				errs = append(errs, "KeycloakIntrospectionEndpoint no es uri valida?")
+			}
+		}
+		if (*config).ClientID == nil {
+			errs = append(errs, "ClientID not set")
+		}
+		if (*config).ClientSecret == nil {
+			errs = append(errs, "ClientSecret not set")
+		}
+		if len(errs) != 0 {
+			return nil, errors.New(strings.Join(errs, ", "))
+		}
+		handler = &PluginIntrospection{
+			next:         next,
+			endpoint:     *((*config).KeycloakIntrospectionEndpoint),
+			clientId:     *((*config).ClientID),
+			clientSecret: *((*config).ClientSecret),
+			realmRoles:   realmRoles,
+			clientRoles:  clientRoles,
+			httpClient: &http.Client{
+				Timeout: 10 * time.Second,
+			},
+		}
+	case "signature":
+		errs = append(errs, "Not Implemented")
+		handler = &PluginSignature{
+			next:        next,
+			cert:        "",
+			realmRoles:  realmRoles,
+			clientRoles: clientRoles,
+		}
+	default:
+		errs = append(errs, "invalid Method")
+	}
+	return handler, nil
 }
 
-func (a *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+func (a *PluginIntrospection) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	authHeader := req.Header.Get("Authorization")
 	if authHeader == "" {
 		http.Error(rw, "authorization header missing", http.StatusBadRequest)
@@ -153,4 +179,8 @@ func (a *Plugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	a.next.ServeHTTP(rw, req)
+}
+
+func (a *PluginSignature) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	http.Error(rw, "to be implemented", http.StatusInternalServerError)
 }

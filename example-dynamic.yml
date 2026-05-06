@@ -16,7 +16,9 @@ http:
     my-middleware:
       plugin:
         localkc:
+          Method: "introspection" # introspection | signature
           KeycloakIntrospectionEndpoint: "https://example.com/auth/realms/realm/protocol/openid-connect/token/introspect"
+          KeycloakCertsEndpoint: "https://example.com/auth/realms/realm/protocol/openid-connect/certs"
           ClientID: "private-client"
           ClientSecret: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           RealmRoles:
