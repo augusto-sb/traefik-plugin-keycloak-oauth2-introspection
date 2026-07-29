@@ -2,9 +2,15 @@ package traefik_plugin_keycloak_oauth2_introspection
 
 import (
 	"context"
+	"crypto"
+	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"slices"
@@ -13,12 +19,17 @@ import (
 )
 
 type Config struct {
+	// intro
 	KeycloakIntrospectionEndpoint *string
 	ClientID                      *string
 	ClientSecret                  *string
-	RealmRoles                    *([]string)
-	ClientRoles                   *(map[string]([]string))
-	Method                        string
+	// cert
+	KeycloakCertsEndpoint *string
+	ExpectedIssuer        string
+	// common
+	RealmRoles  *([]string)
+	ClientRoles *(map[string]([]string))
+	Method      string
 }
 
 type ResponseRoles struct {
@@ -31,11 +42,35 @@ type Response struct {
 	ResourceAccess map[string]ResponseRoles `json:"resource_access"`
 }
 
+type JWTClaims struct {
+	Exp int64  `json:"exp"`
+	Iss string `json:"iss"`
+	Aud any    `json:"aud"` // Can be string or array of strings
+}
+
+type Key struct {
+	Alg string   `json:"alg"`
+	E   string   `json:"e"`
+	Kid string   `json:"kid"`
+	Kty string   `json:"kty"`
+	N   string   `json:"n"`
+	Use string   `json:"use"`
+	X5c []string `json:"x5c"`
+	X5t string   `json:"x5t"`
+	//X5tS256 string   `json:"x5t#S256"`
+}
+
+type CertsResponse struct {
+	Keys []Key `json:"keys"`
+}
+
 func CreateConfig() *Config {
 	return &Config{
 		KeycloakIntrospectionEndpoint: nil,
 		ClientID:                      nil,
 		ClientSecret:                  nil,
+		KeycloakCertsEndpoint:         nil,
+		ExpectedIssuer:                "",
 		RealmRoles:                    nil,
 		ClientRoles:                   nil,
 		Method:                        "",
@@ -53,16 +88,18 @@ type PluginIntrospection struct {
 }
 
 type PluginSignature struct {
-	next        http.Handler
-	cert        string
-	realmRoles  []string
-	clientRoles map[string]([]string)
+	next           http.Handler
+	certs          CertsResponse
+	expectedIssuer string
+	realmRoles     []string
+	clientRoles    map[string]([]string)
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	var errs []string = []string{}
 	var handler http.Handler
 
+	// common
 	realmRoles := []string{}
 	if (*config).RealmRoles != nil {
 		realmRoles = *((*config).RealmRoles)
@@ -88,9 +125,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		if (*config).ClientSecret == nil {
 			errs = append(errs, "ClientSecret not set")
 		}
-		if len(errs) != 0 {
-			return nil, errors.New(strings.Join(errs, ", "))
-		}
 		handler = &PluginIntrospection{
 			next:         next,
 			endpoint:     *((*config).KeycloakIntrospectionEndpoint),
@@ -103,15 +137,41 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			},
 		}
 	case "signature":
-		errs = append(errs, "Not Implemented")
+		certs := CertsResponse{}
+		if (*config).KeycloakCertsEndpoint == nil {
+			errs = append(errs, "KeycloakCertsEndpoint not set")
+		} else {
+			resp, err := http.Get(*((*config).KeycloakCertsEndpoint))
+			if err != nil {
+				errs = append(errs, "http.Get error")
+			} else {
+				defer resp.Body.Close()
+				bodyBytes, err := io.ReadAll(resp.Body)
+				if err != nil {
+					errs = append(errs, "io.ReadAll(resp.Body)")
+				} else {
+					var s CertsResponse
+					err = json.Unmarshal(bodyBytes, &s)
+					if err != nil {
+						errs = append(errs, "json.Unmarshal(bodyBytes, &s)")
+					} else {
+						certs = s
+					}
+				}
+			}
+		}
 		handler = &PluginSignature{
-			next:        next,
-			cert:        "",
-			realmRoles:  realmRoles,
-			clientRoles: clientRoles,
+			next:           next,
+			certs:          certs,
+			expectedIssuer: (*config).ExpectedIssuer,
+			realmRoles:     realmRoles,
+			clientRoles:    clientRoles,
 		}
 	default:
 		errs = append(errs, "invalid Method")
+	}
+	if len(errs) != 0 {
+		return nil, errors.New(strings.Join(errs, ", "))
 	}
 	return handler, nil
 }
@@ -182,5 +242,119 @@ func (a *PluginIntrospection) ServeHTTP(rw http.ResponseWriter, req *http.Reques
 }
 
 func (a *PluginSignature) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	http.Error(rw, "to be implemented", http.StatusInternalServerError)
+	authHeader := req.Header.Get("Authorization")
+	if authHeader == "" {
+		http.Error(rw, "authorization header missing", http.StatusBadRequest)
+		return
+	}
+	prefix := "Bearer "
+	if !strings.HasPrefix(authHeader, prefix) {
+		http.Error(rw, "authorization header malformed: expected 'Bearer ' prefix", http.StatusBadRequest)
+		return
+	}
+	token := strings.TrimPrefix(authHeader, prefix)
+	err := ValidateJWT(token, &(a.certs), a.expectedIssuer)
+	if err != nil {
+		http.Error(rw, "invalid token", http.StatusUnauthorized)
+		return
+	}
+	a.next.ServeHTTP(rw, req)
+}
+
+func DecodeBase64URL(seg string) ([]byte, error) {
+	if l := len(seg) % 4; l > 0 {
+		seg += strings.Repeat("=", 4-l)
+	}
+	return base64.URLEncoding.DecodeString(seg)
+}
+
+func ValidateJWT(tokenStr string, jwks *CertsResponse, expectedIssuer string) error {
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) != 3 {
+		return errors.New("invalid token format")
+	}
+
+	headerPart, payloadPart, signaturePart := parts[0], parts[1], parts[2]
+
+	// 1. Parse Header to get Key ID (kid)
+	headerBytes, err := DecodeBase64URL(headerPart)
+	if err != nil {
+		return fmt.Errorf("failed to decode header: %w", err)
+	}
+	var header struct {
+		Kid string `json:"kid"`
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return fmt.Errorf("failed to unmarshal header: %w", err)
+	}
+	if header.Alg != "RS256" {
+		return fmt.Errorf("unsupported algorithm: %s", header.Alg)
+	}
+
+	// 2. Parse and Validate Payload Claims
+	payloadBytes, err := DecodeBase64URL(payloadPart)
+	if err != nil {
+		return fmt.Errorf("failed to decode payload: %w", err)
+	}
+	var claims JWTClaims
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		return fmt.Errorf("failed to unmarshal claims: %w", err)
+	}
+
+	if time.Now().Unix() > claims.Exp {
+		return errors.New("token has expired")
+	}
+	if claims.Iss != expectedIssuer {
+		return fmt.Errorf("invalid issuer: got %s, want %s", claims.Iss, expectedIssuer)
+	}
+
+	// 3. Find matching JWK
+	var targetKey *Key
+	for _, key := range jwks.Keys {
+		if key.Kid == header.Kid {
+			targetKey = &key
+			break
+		}
+	}
+	if targetKey == nil {
+		return errors.New("corresponding public key not found in JWKS")
+	}
+
+	// 4. Reconstruct RSA Public Key from JWK Modulus (n) and Exponent (e)
+	nBytes, err := DecodeBase64URL(targetKey.N)
+	if err != nil {
+		return fmt.Errorf("failed to decode modulus: %w", err)
+	}
+	eBytes, err := DecodeBase64URL(targetKey.E)
+	if err != nil {
+		return fmt.Errorf("failed to decode exponent: %w", err)
+	}
+
+	var eVal int
+	for _, b := range eBytes {
+		eVal = (eVal << 8) + int(b)
+	}
+
+	pubKey := &rsa.PublicKey{
+		N: new(big.Int).SetBytes(nBytes),
+		E: eVal,
+	}
+
+	// 5. Verify Cryptographic Signature
+	sigBytes, err := DecodeBase64URL(signaturePart)
+	if err != nil {
+		return fmt.Errorf("failed to decode signature: %w", err)
+	}
+
+	// Signature covers "header.payload"
+	signedData := []byte(headerPart + "." + payloadPart)
+	hashed := sha256.Sum256(signedData)
+
+	err = rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hashed[:], sigBytes)
+	if err != nil {
+		return fmt.Errorf("signature verification failed: %w", err)
+	}
+
+	return nil
 }

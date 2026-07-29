@@ -18,6 +18,13 @@ docker container run --rm -p 8080:8080 \
   docker.io/library/traefik:v3.6.15 \
   traefik --configFile=/static.yml;
 ```
+```bash
+podman container run --rm -p 8080:8080 \
+  -v ./example-static.yml:/static.yml:ro \
+  -v ./example-dynamic.yml:/dynamic.yml:ro \
+  docker.io/library/traefik:3.7.9 \
+  traefik --configFile=/static.yml;
+```
 
 ## get token
 
