@@ -338,7 +338,7 @@ func (a *PluginSignature) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		}
 	}
 	if targetKey == nil {
-		http.Error(rw, "corresponding public key not found in JWKS", http.StatusUnauthorized)
+		http.Error(rw, "corresponding public key not found in JWKS", http.StatusNotFound)
 		return
 	}
 	// 4. Reconstruct RSA Public Key from JWK Modulus (n) and Exponent (e)
