@@ -8,7 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
+	//"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -40,6 +40,11 @@ type Response struct {
 	Active         *bool                    `json:"active"`
 	RealmAccess    ResponseRoles            `json:"realm_access"`
 	ResourceAccess map[string]ResponseRoles `json:"resource_access"`
+}
+
+type JWTHeader struct {
+	Kid string `json:"kid"`
+	Alg string `json:"alg"`
 }
 
 type JWTClaims struct {
@@ -241,6 +246,13 @@ func (a *PluginIntrospection) ServeHTTP(rw http.ResponseWriter, req *http.Reques
 	a.next.ServeHTTP(rw, req)
 }
 
+func DecodeBase64URL(seg string) ([]byte, error) {
+	if l := len(seg) % 4; l > 0 {
+		seg += strings.Repeat("=", 4-l)
+	}
+	return base64.URLEncoding.DecodeString(seg)
+}
+
 func (a *PluginSignature) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	authHeader := req.Header.Get("Authorization")
 	if authHeader == "" {
@@ -253,108 +265,90 @@ func (a *PluginSignature) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 	token := strings.TrimPrefix(authHeader, prefix)
-	err := ValidateJWT(token, &(a.certs), a.expectedIssuer)
-	if err != nil {
-		http.Error(rw, "invalid token", http.StatusUnauthorized)
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		http.Error(rw, "invalid token format", http.StatusBadRequest)
 		return
 	}
-	a.next.ServeHTTP(rw, req)
-}
-
-func DecodeBase64URL(seg string) ([]byte, error) {
-	if l := len(seg) % 4; l > 0 {
-		seg += strings.Repeat("=", 4-l)
-	}
-	return base64.URLEncoding.DecodeString(seg)
-}
-
-func ValidateJWT(tokenStr string, jwks *CertsResponse, expectedIssuer string) error {
-	parts := strings.Split(tokenStr, ".")
-	if len(parts) != 3 {
-		return errors.New("invalid token format")
-	}
-
 	headerPart, payloadPart, signaturePart := parts[0], parts[1], parts[2]
-
 	// 1. Parse Header to get Key ID (kid)
 	headerBytes, err := DecodeBase64URL(headerPart)
 	if err != nil {
-		return fmt.Errorf("failed to decode header: %w", err)
+		http.Error(rw, "failed to decode header", http.StatusInternalServerError)
+		return
 	}
-	var header struct {
-		Kid string `json:"kid"`
-		Alg string `json:"alg"`
-	}
+	var header JWTHeader
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return fmt.Errorf("failed to unmarshal header: %w", err)
+		http.Error(rw, "failed to unmarshal header", http.StatusInternalServerError)
+		return
 	}
 	if header.Alg != "RS256" {
-		return fmt.Errorf("unsupported algorithm: %s", header.Alg)
+		http.Error(rw, "unsupported algorithm: "+header.Alg, http.StatusBadRequest)
+		return
 	}
-
 	// 2. Parse and Validate Payload Claims
 	payloadBytes, err := DecodeBase64URL(payloadPart)
 	if err != nil {
-		return fmt.Errorf("failed to decode payload: %w", err)
+		http.Error(rw, "failed to decode payload", http.StatusInternalServerError)
+		return
 	}
 	var claims JWTClaims
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return fmt.Errorf("failed to unmarshal claims: %w", err)
+		http.Error(rw, "failed to unmarshal claims", http.StatusInternalServerError)
+		return
 	}
-
 	if time.Now().Unix() > claims.Exp {
-		return errors.New("token has expired")
+		http.Error(rw, "token has expired", http.StatusUnauthorized)
+		return
 	}
-	if claims.Iss != expectedIssuer {
-		return fmt.Errorf("invalid issuer: got %s, want %s", claims.Iss, expectedIssuer)
+	if claims.Iss != a.expectedIssuer {
+		http.Error(rw, "invalid issuer: got "+claims.Iss+", want "+a.expectedIssuer, http.StatusUnauthorized)
+		return
 	}
-
 	// 3. Find matching JWK
 	var targetKey *Key
-	for _, key := range jwks.Keys {
+	for _, key := range a.certs.Keys {
 		if key.Kid == header.Kid {
 			targetKey = &key
 			break
 		}
 	}
 	if targetKey == nil {
-		return errors.New("corresponding public key not found in JWKS")
+		http.Error(rw, "corresponding public key not found in JWKS", http.StatusUnauthorized)
+		return
 	}
-
 	// 4. Reconstruct RSA Public Key from JWK Modulus (n) and Exponent (e)
 	nBytes, err := DecodeBase64URL(targetKey.N)
 	if err != nil {
-		return fmt.Errorf("failed to decode modulus: %w", err)
+		http.Error(rw, "failed to decode modulus", http.StatusInternalServerError)
+		return
 	}
 	eBytes, err := DecodeBase64URL(targetKey.E)
 	if err != nil {
-		return fmt.Errorf("failed to decode exponent: %w", err)
+		http.Error(rw, "failed to decode exponent", http.StatusInternalServerError)
+		return
 	}
-
 	var eVal int
 	for _, b := range eBytes {
 		eVal = (eVal << 8) + int(b)
 	}
-
 	pubKey := &rsa.PublicKey{
 		N: new(big.Int).SetBytes(nBytes),
 		E: eVal,
 	}
-
 	// 5. Verify Cryptographic Signature
 	sigBytes, err := DecodeBase64URL(signaturePart)
 	if err != nil {
-		return fmt.Errorf("failed to decode signature: %w", err)
+		http.Error(rw, "failed to decode signature", http.StatusInternalServerError)
+		return
 	}
-
 	// Signature covers "header.payload"
 	signedData := []byte(headerPart + "." + payloadPart)
 	hashed := sha256.Sum256(signedData)
-
 	err = rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hashed[:], sigBytes)
 	if err != nil {
-		return fmt.Errorf("signature verification failed: %w", err)
+		http.Error(rw, "signature verification failed", http.StatusUnauthorized)
+		return
 	}
-
-	return nil
+	a.next.ServeHTTP(rw, req)
 }
