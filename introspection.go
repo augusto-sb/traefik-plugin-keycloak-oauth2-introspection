@@ -48,9 +48,11 @@ type JWTHeader struct {
 }
 
 type JWTClaims struct {
-	Exp int64  `json:"exp"`
-	Iss string `json:"iss"`
-	Aud any    `json:"aud"` // Can be string or array of strings
+	Exp            int64                    `json:"exp"`
+	Iss            string                   `json:"iss"`
+	Aud            any                      `json:"aud"` // Can be string or array of strings
+	RealmAccess    ResponseRoles            `json:"realm_access"`
+	ResourceAccess map[string]ResponseRoles `json:"resource_access"`
 }
 
 type Key struct {
@@ -303,6 +305,28 @@ func (a *PluginSignature) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 	if claims.Iss != a.expectedIssuer {
 		http.Error(rw, "invalid issuer: got "+claims.Iss+", want "+a.expectedIssuer, http.StatusUnauthorized)
+		return
+	}
+	var errs []string = []string{}
+	for _, r := range a.realmRoles {
+		if !slices.Contains(claims.RealmAccess.Roles, r) {
+			errs = append(errs, r)
+		}
+	}
+	for cfgCRkey, cfgCRval := range a.clientRoles {
+		tokenCRval, tokenCRok := claims.ResourceAccess[cfgCRkey]
+		if tokenCRok {
+			for _, crv := range cfgCRval {
+				if !slices.Contains(tokenCRval.Roles, crv) {
+					errs = append(errs, cfgCRkey+":"+crv)
+				}
+			}
+		} else {
+			errs = append(errs, cfgCRkey+":("+strings.Join(cfgCRval, "|")+")")
+		}
+	}
+	if len(errs) != 0 {
+		http.Error(rw, "missing roles: "+strings.Join(errs, ", "), http.StatusForbidden)
 		return
 	}
 	// 3. Find matching JWK
