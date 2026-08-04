@@ -8,5 +8,6 @@ testData:
   KeycloakIntrospectionEndpoint: "https://auth.example.com/realms/myrealm/protocol/openid-connect/token/introspect"
   ClientID: "my-private-client"
   ClientSecret: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  Method: "introspection"
 
 summary: 'traefik plugin to validate jwt tokens against keycloak and verify if active'
